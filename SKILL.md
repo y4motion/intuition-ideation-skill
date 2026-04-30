@@ -7,7 +7,8 @@ description: >
   attestation about their idea, or generally talks about "I have an idea" in the context of
   Intuition, web3 identity, attestations, knowledge graphs, or decentralized trust.
   Also trigger when someone says things like "new idea", "product concept", "build on Intuition",
-  "idea for the protocol", "submit idea", or "publish my idea".
+  "idea for the protocol", "submit idea", "publish my idea", "random idea", "pick an idea",
+  "inspire me", "what should I build", or "explore ideas".
 compatibility:
   tools:
     - Bash
@@ -46,7 +47,13 @@ Think of yourself as a friendly co-founder helping someone shape their vision. K
 
 ## Important: This is a Conversational Workflow
 
-This skill walks the user through **5 steps in order**. Don't rush — each step involves a conversation with the user. Wait for their input and confirmation before moving to the next step. Show progress clearly so the user always knows where they are.
+This skill supports **two modes**:
+
+### Mode A: Full Ideation (5 Steps)
+Walk the user through all 5 steps when they come with their own idea. This is the default mode.
+
+### Mode B: Random Idea Picker
+When the user says "random idea", "inspire me", "what should I build", or "pick an idea for me", start with the **Random Idea Picker** (see below) to pull an existing idea from the onchain list, then jump to Step 2 for brainstorming refinement.
 
 Display this progress bar at the start and update it as you go:
 
@@ -56,9 +63,70 @@ Display this progress bar at the start and update it as you go:
 
 ---
 
+## Random Idea Picker (Mode B Entry Point)
+
+**Goal:** Pull a random idea from the Intuition onchain knowledge graph and present it for brainstorming.
+
+### Fetch Ideas from Onchain
+
+Query the Intuition mainnet GraphQL API to retrieve ideas that have been published as atoms with the `[Idea] - [top project ideas for] - [Intuition]` triple pattern:
+
+```bash
+# Fetch ideas linked to Intuition via the "top project ideas for" predicate
+RESULT=$(curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query GetIdeas { triples(where: {predicate: {label: {_ilike: \"%top project ideas%\"}}, object: {label: {_ilike: \"%intuition%\"}}}, limit: 100) { id subject { term_id label type image { url } vault { totalShares positionCount } } predicate { label } object { label } vault { totalShares positionCount } } }"
+  }')
+
+echo "$RESULT" | python3 -c "
+import json, sys, random
+data = json.load(sys.stdin)
+triples = data.get('data', {}).get('triples', [])
+if not triples:
+    print('NO_IDEAS_FOUND')
+else:
+    pick = random.choice(triples)
+    subj = pick['subject']
+    shares = subj.get('vault', {}).get('totalShares', '0')
+    positions = subj.get('vault', {}).get('positionCount', 0)
+    print(f'IDEA: {subj[\"label\"]}')
+    print(f'ATOM_ID: {subj[\"term_id\"]}')
+    print(f'TYPE: {subj.get(\"type\", \"Unknown\")}')
+    print(f'STAKERS: {positions}')
+    print(f'TOTAL_SHARES: {shares}')
+"
+```
+
+If the onchain query returns no ideas (e.g., the 300 ideas haven't been migrated yet), fall back to the GitHub ideas repo:
+
+```bash
+# Fallback: fetch ideas from GitHub
+gh api repos/intuition-box/ideas/contents/ideas --jq '.[].name' 2>/dev/null | shuf -n 1
+```
+
+### Present the Random Idea
+
+Show the user the picked idea with context:
+
+> "🎲 **Random Idea from the Intuition Knowledge Graph:**
+>
+> **[Idea Title]**
+> - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
+> - Community backing: [X] stakers with [Y] $TRUST staked
+> - Status: [Already scoped / Needs refinement / Fresh concept]
+>
+> Want to brainstorm how to build this? Or roll again for a different idea?"
+
+If the user wants to proceed, jump to **Step 2** with this idea pre-loaded as the base concept.
+If they want another idea, re-run the random selection (up to 5 times).
+If they prefer to start fresh with their own idea, go to **Step 1**.
+
+---
+
 ## Step 1: Brief Description & Search for Similarity
 
-**Goal:** Understand the user's idea at a high level and check if something similar already exists in the Intuition ecosystem.
+**Goal:** Understand the user's idea at a high level and check if something similar already exists — both on GitHub AND on-chain.
 
 ### 1a. Capture the idea
 
@@ -71,28 +139,50 @@ Listen carefully and reflect back a **one-paragraph summary** for them to confir
 - **Who** it's for (the target user)
 - **Why** it connects to Intuition (how it uses trust, attestations, identity, or the knowledge graph)
 
-### 1b. Search for existing similar ideas
+### 1b. Dual-check: Search GitHub AND onchain state
 
-Use the Intuition Protocol's GraphQL API to search for atoms related to the user's idea. This helps avoid duplicates and can inspire refinements. Use the endpoint from `references/intuition-protocol-skill.md` (mainnet: `https://mainnet.intuition.sh/v1/graphql`).
+**Important:** Always check BOTH sources before proceeding. This prevents duplicate work and surfaces existing community interest.
+
+#### Check 1: Onchain Knowledge Graph
+
+Search the Intuition mainnet GraphQL API for atoms related to the user's idea:
 
 ```bash
 # Search for atoms matching key terms from the idea
-# Use mainnet GraphQL endpoint from the protocol skill reference
 curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
   -H "Content-Type: application/json" \
-  -d '{"query": "query { atoms(where: {label: {_ilike: \"%KEYWORD%\"}}, limit: 10) { id term_id label type image { url } vault { totalShares positionCount } } }"}'
+  -d '{
+    "query": "query SearchIdeas($keyword: String!) { atoms(where: {label: {_ilike: $keyword}}, limit: 10, order_by: {vault: {totalShares: desc}}) { term_id label type image { url } vault { totalShares positionCount } as_subject_triples(limit: 5) { predicate { label } object { label } } } }",
+    "variables": {"keyword": "%KEYWORD%"}
+  }'
 ```
 
 Replace `KEYWORD` with 2-3 key terms from the user's idea (run separate searches).
 
-Also search the GitHub ideas repo:
+#### Check 2: GitHub Ideas Repository
+
 ```bash
 gh search issues --repo intuition-box/ideas "KEYWORD" --limit 10
 ```
 
-**Present results to the user:**
-- If similar ideas exist: "I found some related concepts already in the ecosystem. Here's what exists: [list]. Your idea is [similar/different] because [reason]. Want to refine your angle, or continue as-is?"
-- If nothing similar: "Good news — this looks like fresh territory! No similar ideas found in the Intuition network or the ideas repo."
+#### Check 3: Onchain Ideas List
+
+Also check if this idea already exists in the curated ideas list:
+
+```bash
+# Check if the idea exists as a triple in the ideas list
+curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query CheckIdeaExists($keyword: String!) { triples(where: {subject: {label: {_ilike: $keyword}}, predicate: {label: {_ilike: \"%top project ideas%\"}}}, limit: 5) { id subject { term_id label vault { totalShares positionCount } } } }",
+    "variables": {"keyword": "%KEYWORD%"}
+  }'
+```
+
+**Present combined results to the user:**
+- If the idea exists onchain: "This idea already lives on the Intuition knowledge graph! It has [X] stakers with [Y] $TRUST behind it. Here's what exists: [details]. Would you like to refine your angle, stake on the existing idea, or continue with a fresh take?"
+- If it exists on GitHub but not onchain: "Found this on GitHub but it hasn't been published onchain yet. Want to be the one to bring it on-chain?"
+- If nothing similar found anywhere: "Good news — this looks like fresh territory! No similar ideas found on-chain or in the ideas repo."
 
 ---
 
@@ -244,7 +334,41 @@ This step uses the **Intuition Protocol skill** (`intuition`). If the user hasn'
 
 > "For this last step, we need the Intuition Protocol skill to create your idea on-chain. You can install it with: `npx skills add 0xintuition/agent-skills --skill intuition`"
 
-### 5a. Create the Idea Atom
+### 5a. Pre-flight checks (NEW — streamlined flow)
+
+Before creating anything, run all checks in one batch to avoid mid-flow failures:
+
+```bash
+# 1. Verify the user's wallet is connected and funded
+# 2. Query current costs so we can give accurate estimates upfront
+ATOM_COST=$(cast call $MULTIVAULT "getAtomCost()(uint256)" --rpc-url https://rpc.intuition.systems/http)
+TRIPLE_COST=$(cast call $MULTIVAULT "getTripleCost()(uint256)" --rpc-url https://rpc.intuition.systems/http)
+CURVE_ID=$(cast call $MULTIVAULT "getBondingCurveConfig()((address,uint256))" --rpc-url https://rpc.intuition.systems/http | awk -F, '{print $2}')
+
+# 3. Check if the idea atom already exists (prevent duplicate creation)
+IDEA_LABEL="[slugified idea title]"
+EXISTING=$(curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"query { atoms(where: {label: {_eq: \\\"$IDEA_LABEL\\\"}}) { term_id label } }\"}")
+
+echo "=== Pre-flight Summary ==="
+echo "Atom creation cost: $(cast --to-unit $ATOM_COST ether) TRUST"
+echo "Triple creation cost: $(cast --to-unit $TRIPLE_COST ether) TRUST"
+echo "Default curve ID: $CURVE_ID"
+echo "Existing atom check: $EXISTING"
+```
+
+Present a clear cost summary to the user BEFORE proceeding:
+
+> "Here's what the on-chain publishing will cost:
+> - Creating your idea atom: [X] $TRUST
+> - Creating relationship triples (up to 4): [Y] $TRUST each
+> - Your stake amount: [user's choice]
+> - **Estimated total: [X + 4Y + stake] $TRUST**
+>
+> Want to proceed?"
+
+### 5b. Create the Idea Atom
 
 An "atom" in Intuition is like a permanent entry in a global knowledge base. We'll create one for this idea.
 
@@ -254,17 +378,36 @@ Using the intuition skill, create an atom with:
 - **URL:** The permanent GitHub blob URL from Step 4c (e.g., `https://github.com/intuition-box/ideas/blob/[COMMIT_SHA]/ideas/[slug-title].md`). This links the on-chain atom directly to the immutable version of the full idea writeup on GitHub — so the atom always points to exactly what was published, even if the file is later updated.
 - **Image:** (optional, if the user has one)
 
-### 5b. Create Relationship Triples
+**If the atom already exists** (detected in pre-flight), skip creation and reuse the existing atom ID:
 
-Create triples that connect the idea to relevant concepts. Suggest triples like:
+> "Great news — an atom for this concept already exists on-chain! We'll link to it instead of creating a duplicate."
+
+### 5c. Create Relationship Triples (batch)
+
+Create triples that connect the idea to relevant concepts. **Use batch creation** to minimize transactions and gas:
+
+First, search for existing predicate and object atoms:
+
+```bash
+# Find existing atoms for predicates and objects
+for LABEL in "top project ideas for" "is-a" "built-on" "targets" "solves"; do
+  curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
+    -H "Content-Type: application/json" \
+    -d "{\"query\": \"query { atoms(where: {label: {_eq: \\\"$LABEL\\\"}}, order_by: {as_predicate_triples_aggregate: {count: desc}}, limit: 1) { term_id label type } }\"}"
+done
+```
+
+Then create all triples in a single batch:
+
+- `[Idea Atom]` → `top project ideas for` → `Intuition` (links to the curated ideas list)
 - `[Idea Atom]` → `is-a` → `Product Idea`
 - `[Idea Atom]` → `built-on` → `Intuition Protocol`
-- `[Idea Atom]` → `targets` → `[Target User Atom]`
-- `[Idea Atom]` → `solves` → `[Problem Atom]`
+- `[Idea Atom]` → `targets` → `[Target User Atom]` (if applicable)
+- `[Idea Atom]` → `solves` → `[Problem Atom]` (if applicable)
 
-Search for existing atoms for the objects (e.g., "Intuition Protocol" likely already exists as an atom) before creating new ones.
+**Important:** The first triple (`top project ideas for Intuition`) is what connects this idea to the curated onchain ideas list, making it discoverable by the Random Idea Picker and the Ideation Dapp.
 
-### 5c. Stake on the Idea
+### 5d. Stake on the Idea
 
 Now it's time for the user to put conviction behind their idea. Staking means depositing $TRUST tokens into the idea's vault — it's like saying "I believe in this enough to put money on it."
 
@@ -272,11 +415,20 @@ Ask the user:
 
 > "Now here's the fun part — you can stake on your own idea to show you believe in it. Staking means depositing some $TRUST tokens into your idea's vault. The more you stake, the more visible your idea becomes, and if others stake too, early believers (that's you!) benefit.
 >
-> How much would you like to stake on your idea? (There's a small minimum required by the protocol)"
+> How much would you like to stake on your idea? (Minimum: [minDeposit from pre-flight] $TRUST)"
 
-Once the user chooses an amount, proceed to create the claim.
+**Show a preview before executing:**
 
-### 5d. Create the Claim: [New Idea] → best
+```bash
+# Preview the deposit to show exact shares they'll receive
+cast call $MULTIVAULT "previewDeposit(bytes32,uint256,uint256)(uint256,uint256)" \
+  $IDEA_ATOM_ID $CURVE_ID $STAKE_AMOUNT \
+  --rpc-url https://rpc.intuition.systems/http
+```
+
+> "For [AMOUNT] $TRUST, you'll receive approximately [SHARES] vault shares. After fees, [NET_AMOUNT] $TRUST will go into the vault. Proceed?"
+
+### 5e. Create the Claim: [New Idea] → best
 
 Create a triple (claim) that asserts this idea is among the best:
 - **Subject:** The newly created Idea Atom
@@ -285,13 +437,13 @@ Create a triple (claim) that asserts this idea is among the best:
 
 Deposit into this claim's vault with:
 - The **minimum protocol deposit** (required to create the triple)
-- **Plus** the additional amount the user chose to stake in 5c
+- **Plus** the additional amount the user chose to stake in 5d
 
 Using the intuition skill, this means creating the triple and depositing in the same transaction (or sequentially: create triple with minimum deposit, then deposit the user's additional stake).
 
 The claim link will look like: `https://app.intuition.systems/claim/[TRIPLE_ID]`
 
-### 5e. Post the Claim to the GitHub PR
+### 5f. Post the Claim to the GitHub PR
 
 Loop back to the PR from Step 4 and add a comment inviting the community to support the idea on-chain:
 
@@ -312,17 +464,19 @@ The author has staked [AMOUNT] $TRUST on this idea.
 *Published on-chain via the Intuition Ideation Skill*"
 ```
 
-### 5f. Confirm everything
+### 5g. Confirm everything
 
 > "You're all set! Here's a recap of everything we did:
 >
 > 📝 **GitHub PR:** [PR URL] — your structured idea, open for community discussion
 > ⛓️ **Idea Atom:** [atom link] — your idea, permanently on the Intuition knowledge graph
+> 🔗 **Ideas List:** Your idea is now linked to the curated Intuition ideas list — discoverable by the Random Idea Picker and the Ideation Dapp
 > 🏷️ **Claim:** [claim link] — your '[Idea Title] → best' claim, staked with [AMOUNT] $TRUST
 > 💬 **PR Comment:** posted — community members can now discover your claim directly from the PR
 >
 > Anyone in the ecosystem can now:
 > - Read your idea on GitHub
+> - Discover it via the Random Idea Picker 🎲
 > - Stake on your claim to show support
 > - Build on your idea by creating new connections in the knowledge graph
 >
@@ -337,6 +491,12 @@ The author has staked [AMOUNT] $TRUST on this idea.
 - **User wants to skip steps:** That's OK. Steps can be skipped, but inform them what they'll miss. The minimum viable path is: Step 2 (draft) → Step 4 (GitHub publish).
 - **User's idea doesn't fit Intuition:** Be honest. "This is a solid idea, but I'm not sure the Intuition Protocol adds much here. Want to explore how it might fit, or would you rather focus on the idea itself and publish it as a general concept?"
 - **GraphQL search fails:** Fall back to text-based search of the GitHub repo only. Don't block the workflow.
+- **Atom already exists:** Don't create a duplicate. Reuse the existing atom ID and inform the user. Offer to stake on the existing atom instead.
+- **Insufficient $TRUST balance:** Show the user their balance and the required amount. Guide them to bridge $TRUST if needed. Don't attempt the transaction.
+- **Transaction reverts:** Check the error against the Error Patterns table in the protocol skill reference. Common causes: atom already exists (use existing), insufficient value (recalculate costs), or array length mismatch (verify batch inputs).
+- **IPFS pinning fails:** If structured atom pinning fails, offer to create a simpler text-only atom as fallback, or retry the pin. Don't silently skip the atom.
+- **Random Idea Picker returns no results:** This means the 300 ideas haven't been migrated onchain yet. Fall back to GitHub search. Offer to help the user migrate an idea as part of their contribution (this itself could be a bounty).
+- **User came from Random Picker and wants to modify the idea:** That's great — encourage remixing. The original atom stays untouched; the user creates a new refined version that references the original.
 
 ---
 
@@ -347,3 +507,4 @@ The author has staked [AMOUNT] $TRUST on this idea.
 - **Use analogies.** "An atom is like a Wikipedia page for any concept" / "Staking is like putting your money where your mouth is — you're saying 'I believe in this'"
 - **Keep it moving.** Each step should feel like progress. If a section is taking too long, offer to fill in a sensible default and let the user edit later.
 - **Celebrate the finish.** Publishing an idea is an achievement. Make it feel like one.
+- **Show costs upfront.** Never surprise the user with a transaction cost. Always preview and confirm before executing.
