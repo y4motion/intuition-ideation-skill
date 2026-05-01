@@ -29,6 +29,13 @@ All modes query the Intuition mainnet GraphQL API, compute momentum scores and a
 
 ## What's New
 
+### v2.2 — Configurable Intelligence (feedback from [@danielamodu](https://github.com/danielamodu))
+- **🎛️ Configurable `dormancy_days`** — Hidden Gems threshold is now tunable (default: 14 days). Power users can set custom values for seasonal ideas (e.g., infrastructure ideas dormant 30+ days)
+- **⏱️ Rising mode minimum age filter** — New `min_rising_age_days` parameter (default: 3 days) prevents brand-new ideas with 1 staker from falsely appearing as "rising"
+- **🧠 Selection reasoning** — Each picked idea now includes a `SELECTION_REASON` explaining WHY it was chosen (e.g., "Gaining 2.45 stakers/day — fastest growing in the pool")
+- **💬 Interactive threshold prompt** — When entering Hidden Gems mode, the skill proactively asks the user if they want to adjust the dormancy window
+- **📊 Enhanced output** — Presentations now show `DORMANCY_THRESHOLD` and `MIN_RISING_AGE` for full transparency
+
 ### v2.1 — Smart Discovery Modes
 - **🔥 Popular / 💎 Hidden Gems / 📈 Rising** — Three discovery strategies for the Random Idea Picker, each with tailored presentation
 - **📊 Momentum scoring** — Computes stakers-per-day growth rate to identify rising ideas

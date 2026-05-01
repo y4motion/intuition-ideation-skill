@@ -85,6 +85,20 @@ Map the user's choice:
 - "rising" / "momentum" / "trending" → `momentum` mode (sort by recent position growth)
 - "surprise" / "random" / default → pure random selection
 
+### Configurable Thresholds
+
+Both `Hidden Gems` and `Rising` modes support user-tunable parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dormancy_days` | 14 | Minimum days of inactivity for Hidden Gems eligibility |
+| `min_rising_age_days` | 3 | Minimum age (days) for Rising mode — prevents brand-new ideas with 1 staker from appearing as "rising" |
+
+If the user selects **Hidden Gems**, proactively ask:
+> "The default dormancy threshold is **14 days** — ideas untouched for longer are surfaced first. Want to adjust? Some seasonal infrastructure ideas may need 30+ days. Just say a number or 'default'."
+
+Parse the user's response: a number sets `dormancy_days`, anything else keeps the default (14).
+
 ### Fetch Ideas from Onchain
 
 Query the Intuition mainnet GraphQL API to retrieve ideas that have been published as atoms with the `[Idea] - [top project ideas for] - [Intuition]` triple pattern.
@@ -115,6 +129,9 @@ if not triples:
     sys.exit(0)
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else 'random'
+# Configurable thresholds (power users can tune via CLI args)
+DORMANCY_DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 14
+MIN_RISING_AGE_DAYS = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 now = datetime.now(timezone.utc)
 
 def parse_ts(ts_str):
@@ -139,21 +156,25 @@ for t in triples:
     # Momentum: stakers per day of age (higher = faster growing)
     t['_momentum'] = positions / age_days if age_days > 0 else 0
     # Rediscovery: has backers but hasn't been touched recently
-    t['_rediscovery'] = (positions > 0 and age_days > 14)
+    t['_rediscovery'] = (positions > 0 and age_days > DORMANCY_DAYS)
 
 if MODE == 'popular':
     # Sort by total shares descending, pick from top 10
     ranked = sorted(triples, key=lambda t: t['_shares'], reverse=True)[:10]
     pick = random.choice(ranked)
 elif MODE == 'rediscovery':
-    # Filter: has stakers but dormant >14 days, sort by staleness
+    # Filter: has stakers but dormant >DORMANCY_DAYS days, sort by staleness
     candidates = [t for t in triples if t['_rediscovery']]
     if not candidates:
         candidates = sorted(triples, key=lambda t: t['_age_days'], reverse=True)[:10]
     pick = random.choice(candidates[:10])
 elif MODE == 'momentum':
     # Sort by stakers-per-day, pick from top 10 fastest growing
-    ranked = sorted(triples, key=lambda t: t['_momentum'], reverse=True)[:10]
+    # Filter out ideas younger than MIN_RISING_AGE_DAYS to avoid false positives
+    mature = [t for t in triples if t['_age_days'] >= MIN_RISING_AGE_DAYS]
+    if not mature:
+        mature = triples  # fallback if all ideas are brand new
+    ranked = sorted(mature, key=lambda t: t['_momentum'], reverse=True)[:10]
     pick = random.choice(ranked)
 else:
     # Pure random
@@ -166,6 +187,16 @@ positions = vault.get('positionCount', 0)
 age = pick['_age_days']
 momentum = pick['_momentum']
 
+# Selection reasoning — explain WHY this idea was picked
+if MODE == 'popular':
+    reason = f'Top-backed idea with {positions} stakers and {shares} $TRUST staked'
+elif MODE == 'rediscovery':
+    reason = f'Had {positions} believers but dormant for {age} days — ripe for revival'
+elif MODE == 'momentum':
+    reason = f'Gaining {momentum:.2f} stakers/day — fastest growing in the pool'
+else:
+    reason = 'Randomly selected from the full onchain idea pool'
+
 print(f'IDEA: {subj["label"]}')
 print(f'ATOM_ID: {subj["term_id"]}')
 print(f'TYPE: {subj.get("type", "Unknown")}')
@@ -174,6 +205,9 @@ print(f'TOTAL_SHARES: {shares}')
 print(f'DAYS_SINCE_ACTIVITY: {age}')
 print(f'MOMENTUM_SCORE: {momentum:.4f}')
 print(f'MODE: {MODE}')
+print(f'DORMANCY_THRESHOLD: {DORMANCY_DAYS}')
+print(f'MIN_RISING_AGE: {MIN_RISING_AGE_DAYS}')
+print(f'SELECTION_REASON: {reason}')
 ```
 
 If the onchain query returns no ideas (e.g., the 300 ideas haven't been migrated yet), fall back to the GitHub ideas repo:
@@ -201,6 +235,7 @@ Show the user the picked idea with context. Tailor the presentation based on the
 > **[Idea Title]**
 > - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
 > - Community backing: [X] stakers — but no activity for [N] days
+> - Dormancy threshold: [DORMANCY_DAYS] days (configurable)
 > - This idea had believers but got buried. Could you be the one to revive it?"
 
 **Momentum mode:**
@@ -208,7 +243,8 @@ Show the user the picked idea with context. Tailor the presentation based on the
 >
 > **[Idea Title]**
 > - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
-> - [X] stakers and growing — momentum score: [M]
+> - [X] stakers and growing — momentum score: [M] stakers/day
+> - Age: [N] days (min threshold: [MIN_RISING_AGE_DAYS] days)
 > - This idea is picking up steam. Jump in now while it's early!"
 
 **Random mode:**
