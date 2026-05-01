@@ -17,16 +17,26 @@ Walk through the complete idea-to-publication pipeline:
 4. **Publish to GitHub** — Create a PR on the [intuition-box/ideas](https://github.com/intuition-box/ideas) repo
 5. **Publish on Intuition** — Create an on-chain atom, link it to the curated ideas list, and stake on it
 
-### Mode B: Random Idea Picker 🎲
-Start with a random idea pulled from the **onchain Intuition ideas list** and refine it:
+### Mode B: Smart Idea Discovery 🎲
+Discover ideas from the **onchain Intuition ideas list** using three strategies:
 
-- Queries the Intuition mainnet GraphQL API for ideas published as atoms
-- Shows community backing (stakers, $TRUST staked)
-- Jumps directly to Step 2 for brainstorming refinement
-- Falls back to GitHub ideas repo if onchain list is empty
+- 🔥 **Popular** — the most backed ideas, sorted by $TRUST staked
+- 💎 **Hidden Gems** — ideas with community support but no recent activity (staleness-weighted rediscovery)
+- 📈 **Rising** — ideas gaining momentum, ranked by stakers-per-day growth rate
+- 🎲 **Random** — pure surprise mode
 
-## What's New (v2)
+All modes query the Intuition mainnet GraphQL API, compute momentum scores and activity age, and fall back to GitHub if onchain data is unavailable.
 
+## What's New
+
+### v2.1 — Smart Discovery Modes
+- **🔥 Popular / 💎 Hidden Gems / 📈 Rising** — Three discovery strategies for the Random Idea Picker, each with tailored presentation
+- **📊 Momentum scoring** — Computes stakers-per-day growth rate to identify rising ideas
+- **⏰ Staleness-weighted rediscovery** — Surfaces ideas with community backing (positionCount > 0) but no activity for 14+ days
+- **🔄 Mode switching** — Users can switch between discovery modes mid-session
+- **📈 Activity metrics** — Each idea now shows days since last activity and momentum score
+
+### v2.0 — Onchain Integration
 - **🎲 Random Idea Picker** — Pull random ideas from the onchain knowledge graph for inspiration
 - **🔍 Dual-state checking** — Search both GitHub AND onchain state before brainstorming to prevent duplicates
 - **🔗 Onchain ideas list integration** — New ideas are automatically linked to the curated list via the `[Idea] → [top project ideas for] → [Intuition]` triple pattern
@@ -58,12 +68,13 @@ Once installed, the skill triggers automatically when you say things like:
 - *"I want to submit an idea to intuition-box"*
 - *"New idea for the protocol"*
 - *"Random idea"* / *"Inspire me"* / *"What should I build?"* / *"Pick an idea for me"*
+- *"Show me hidden gems"* / *"What's trending?"* / *"Find forgotten ideas"*
 
 ## Skill Structure
 
 ```
 .claude/skills/intuition-ideation/
-├── SKILL.md                              # Main skill definition (v2 — with random picker & onchain integration)
+├── SKILL.md                              # Main skill definition (v2.1 — smart discovery modes + onchain integration)
 ├── assets/
 │   └── workflow-overview.png             # Visual overview of the 5-step workflow
 └── references/

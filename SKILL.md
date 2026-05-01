@@ -67,35 +67,113 @@ Display this progress bar at the start and update it as you go:
 
 **Goal:** Pull a random idea from the Intuition onchain knowledge graph and present it for brainstorming.
 
+### Discovery Modes
+
+When the user triggers Mode B, offer three discovery strategies:
+
+> "How would you like to discover ideas?
+>
+> 🔥 **Popular** — the most backed ideas (highest $TRUST staked)
+> 💎 **Hidden Gems** — ideas with community support that haven't had recent activity (rediscovery mode)
+> 📈 **Rising** — ideas gaining momentum right now (most new stakers recently)
+>
+> Or just say 'surprise me' for a fully random pick!"
+
+Map the user's choice:
+- "popular" / "top" / "best" → `popular` mode (sort by `totalShares desc`)
+- "hidden" / "forgotten" / "gems" / "rediscovery" → `rediscovery` mode (sort by `updatedAt asc`, filter `positionCount > 0`)
+- "rising" / "momentum" / "trending" → `momentum` mode (sort by recent position growth)
+- "surprise" / "random" / default → pure random selection
+
 ### Fetch Ideas from Onchain
 
-Query the Intuition mainnet GraphQL API to retrieve ideas that have been published as atoms with the `[Idea] - [top project ideas for] - [Intuition]` triple pattern:
+Query the Intuition mainnet GraphQL API to retrieve ideas that have been published as atoms with the `[Idea] - [top project ideas for] - [Intuition]` triple pattern.
+
+**Base query** (used by all modes):
 
 ```bash
 # Fetch ideas linked to Intuition via the "top project ideas for" predicate
+# MODE_ORDER_BY is set based on user's choice (see mode-specific overrides below)
 RESULT=$(curl -s -X POST https://mainnet.intuition.sh/v1/graphql \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "query GetIdeas { triples(where: {predicate: {label: {_ilike: \"%top project ideas%\"}}, object: {label: {_ilike: \"%intuition%\"}}}, limit: 100) { id subject { term_id label type image { url } vault { totalShares positionCount } } predicate { label } object { label } vault { totalShares positionCount } } }"
+    "query": "query GetIdeas { triples(where: {predicate: {label: {_ilike: \"%top project ideas%\"}}, object: {label: {_ilike: \"%intuition%\"}}}, limit: 100) { id createdAt updatedAt subject { term_id label type image { url } createdAt updatedAt vault { totalShares positionCount currentSharePrice } } predicate { label } object { label } vault { totalShares positionCount } } }"
   }')
+```
 
-echo "$RESULT" | python3 -c "
+**Mode-specific selection logic:**
+
+```python
 import json, sys, random
+from datetime import datetime, timezone
+
 data = json.load(sys.stdin)
 triples = data.get('data', {}).get('triples', [])
+
 if not triples:
     print('NO_IDEAS_FOUND')
+    sys.exit(0)
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else 'random'
+now = datetime.now(timezone.utc)
+
+def parse_ts(ts_str):
+    """Parse ISO timestamp, return datetime or epoch if missing."""
+    if not ts_str:
+        return datetime(2020, 1, 1, tzinfo=timezone.utc)
+    return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+
+def days_since(ts_str):
+    return (now - parse_ts(ts_str)).days or 1
+
+# Enrich each triple with computed metrics
+for t in triples:
+    subj = t['subject']
+    vault = subj.get('vault', {})
+    shares = int(vault.get('totalShares', '0'))
+    positions = vault.get('positionCount', 0)
+    age_days = days_since(subj.get('updatedAt'))
+    t['_shares'] = shares
+    t['_positions'] = positions
+    t['_age_days'] = age_days
+    # Momentum: stakers per day of age (higher = faster growing)
+    t['_momentum'] = positions / age_days if age_days > 0 else 0
+    # Rediscovery: has backers but hasn't been touched recently
+    t['_rediscovery'] = (positions > 0 and age_days > 14)
+
+if MODE == 'popular':
+    # Sort by total shares descending, pick from top 10
+    ranked = sorted(triples, key=lambda t: t['_shares'], reverse=True)[:10]
+    pick = random.choice(ranked)
+elif MODE == 'rediscovery':
+    # Filter: has stakers but dormant >14 days, sort by staleness
+    candidates = [t for t in triples if t['_rediscovery']]
+    if not candidates:
+        candidates = sorted(triples, key=lambda t: t['_age_days'], reverse=True)[:10]
+    pick = random.choice(candidates[:10])
+elif MODE == 'momentum':
+    # Sort by stakers-per-day, pick from top 10 fastest growing
+    ranked = sorted(triples, key=lambda t: t['_momentum'], reverse=True)[:10]
+    pick = random.choice(ranked)
 else:
+    # Pure random
     pick = random.choice(triples)
-    subj = pick['subject']
-    shares = subj.get('vault', {}).get('totalShares', '0')
-    positions = subj.get('vault', {}).get('positionCount', 0)
-    print(f'IDEA: {subj[\"label\"]}')
-    print(f'ATOM_ID: {subj[\"term_id\"]}')
-    print(f'TYPE: {subj.get(\"type\", \"Unknown\")}')
-    print(f'STAKERS: {positions}')
-    print(f'TOTAL_SHARES: {shares}')
-"
+
+subj = pick['subject']
+vault = subj.get('vault', {})
+shares = vault.get('totalShares', '0')
+positions = vault.get('positionCount', 0)
+age = pick['_age_days']
+momentum = pick['_momentum']
+
+print(f'IDEA: {subj["label"]}')
+print(f'ATOM_ID: {subj["term_id"]}')
+print(f'TYPE: {subj.get("type", "Unknown")}')
+print(f'STAKERS: {positions}')
+print(f'TOTAL_SHARES: {shares}')
+print(f'DAYS_SINCE_ACTIVITY: {age}')
+print(f'MOMENTUM_SCORE: {momentum:.4f}')
+print(f'MODE: {MODE}')
 ```
 
 If the onchain query returns no ideas (e.g., the 300 ideas haven't been migrated yet), fall back to the GitHub ideas repo:
@@ -107,16 +185,41 @@ gh api repos/intuition-box/ideas/contents/ideas --jq '.[].name' 2>/dev/null | sh
 
 ### Present the Random Idea
 
-Show the user the picked idea with context:
+Show the user the picked idea with context. Tailor the presentation based on the discovery mode:
 
-> "🎲 **Random Idea from the Intuition Knowledge Graph:**
+**Popular mode:**
+> "🔥 **Top Idea from the Intuition Knowledge Graph:**
 >
 > **[Idea Title]**
 > - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
 > - Community backing: [X] stakers with [Y] $TRUST staked
-> - Status: [Already scoped / Needs refinement / Fresh concept]
+> - Status: [Already scoped / Needs refinement / Fresh concept]"
+
+**Rediscovery mode:**
+> "💎 **Hidden Gem Rediscovered:**
 >
-> Want to brainstorm how to build this? Or roll again for a different idea?"
+> **[Idea Title]**
+> - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
+> - Community backing: [X] stakers — but no activity for [N] days
+> - This idea had believers but got buried. Could you be the one to revive it?"
+
+**Momentum mode:**
+> "📈 **Rising Idea — Gaining Traction:**
+>
+> **[Idea Title]**
+> - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
+> - [X] stakers and growing — momentum score: [M]
+> - This idea is picking up steam. Jump in now while it's early!"
+
+**Random mode:**
+> "🎲 **Random Idea from the Intuition Knowledge Graph:**
+>
+> **[Idea Title]**
+> - On-chain atom: [link to app.intuition.systems/atom/ATOM_ID]
+> - Community backing: [X] stakers with [Y] $TRUST staked"
+
+After presenting, always offer:
+> "Want to brainstorm how to build this? Or roll again for a different idea? (You can also switch modes: `popular`, `hidden gems`, `rising`, or `random`)"
 
 If the user wants to proceed, jump to **Step 2** with this idea pre-loaded as the base concept.
 If they want another idea, re-run the random selection (up to 5 times).
